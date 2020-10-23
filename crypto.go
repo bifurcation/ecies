@@ -303,8 +303,16 @@ func (s ecdhScheme) SerializePrivate(sk KEMPrivateKey) []byte {
 	}
 
 	raw := sk.(*ecdhPrivateKey)
+
+	// Reduce modulo the order of the curve, and store the resulting integer
+	k := new(big.Int)
+	z := new(big.Int)
+	k.SetBytes(raw.d)
+	z.Mod(k, raw.curve.Params().N)
+
+	zBytes := z.Bytes()
 	copied := make([]byte, len(raw.d))
-	copy(copied, raw.d)
+	copy(copied[len(raw.d)-len(zBytes):], zBytes)
 	return copied
 }
 
@@ -322,7 +330,15 @@ func (s ecdhScheme) DeserializePrivate(enc []byte) (KEMPrivateKey, error) {
 		return nil, fmt.Errorf("Invalid input")
 	}
 
-	x, y := s.curve.Params().ScalarBaseMult(enc)
+	k := new(big.Int)
+	k.SetBytes(enc)
+	z := new(big.Int)
+	z.Mod(k, s.curve.Params().N)
+	if z.Cmp(big.NewInt(0)) == 0 {
+		return nil, fmt.Errorf("Invalid private key order")
+	}
+
+	x, y := s.curve.Params().ScalarBaseMult(z.Bytes())
 	return &ecdhPrivateKey{s.curve, enc, x, y}, nil
 }
 
@@ -405,12 +421,25 @@ func (s x25519Scheme) Serialize(pk KEMPublicKey) []byte {
 	return raw.val[:]
 }
 
+func clampX25519(key []byte) []byte {
+	if len(key) != 32 {
+		panic("Invalid key length")
+	}
+
+	copied := key[:]
+	copied[0] &= 248
+	copied[31] &= 127
+	copied[31] |= 64
+
+	return copied
+}
+
 func (s x25519Scheme) SerializePrivate(sk KEMPrivateKey) []byte {
 	if sk == nil {
 		return nil
 	}
 	raw := sk.(*x25519PrivateKey)
-	return raw.val[:]
+	return clampX25519(raw.val[:])
 }
 
 func (s x25519Scheme) Deserialize(enc []byte) (KEMPublicKey, error) {
@@ -432,8 +461,14 @@ func (s x25519Scheme) DeserializePrivate(enc []byte) (KEMPrivateKey, error) {
 		return nil, fmt.Errorf("Error deserializing X25519 private key")
 	}
 
+	copied := clampX25519(enc)
+	var zero [32]byte
+	if subtle.ConstantTimeCompare(copied, zero[:]) == 1 {
+		return nil, fmt.Errorf("bad private key input: low order point")
+	}
+
 	key := &x25519PrivateKey{}
-	copy(key.val[:], enc[0:32])
+	copy(key.val[:], copied[0:32])
 	return key, nil
 }
 
@@ -509,12 +544,24 @@ func (s x448Scheme) Serialize(pk KEMPublicKey) []byte {
 	return raw.val[:]
 }
 
+func clampX448(key []byte) []byte {
+	if len(key) != 56 {
+		panic("Invalid key length")
+	}
+
+	copied := key[:]
+	copied[0] &= 252
+	copied[55] |= 128
+
+	return copied
+}
+
 func (s x448Scheme) SerializePrivate(sk KEMPrivateKey) []byte {
 	if sk == nil {
 		return nil
 	}
 	raw := sk.(*x448PrivateKey)
-	return raw.val[:]
+	return clampX448(raw.val[:])
 }
 
 func (s x448Scheme) Deserialize(enc []byte) (KEMPublicKey, error) {
@@ -536,8 +583,14 @@ func (s x448Scheme) DeserializePrivate(enc []byte) (KEMPrivateKey, error) {
 		return nil, fmt.Errorf("Error deserializing X448 private key")
 	}
 
+	copied := clampX448(enc)
+	var zero [56]byte
+	if subtle.ConstantTimeCompare(copied, zero[:]) == 1 {
+		return nil, fmt.Errorf("bad private key input: low order point")
+	}
+
 	key := &x448PrivateKey{}
-	copy(key.val[:], enc[0:56])
+	copy(key.val[:], copied[0:56])
 	return key, nil
 }
 
